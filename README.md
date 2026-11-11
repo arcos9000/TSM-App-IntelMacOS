@@ -100,12 +100,12 @@ The AppImage is designed for x86_64 desktop distributions such as Ubuntu, Debian
 1. Open TSM Desktop.
 2. Select your base **World of Warcraft** directory, which contains client folders such as `_retail_`, `_forever_`, `_classic_`, and `_anniversary_`.
 3. Choose your notification, startup, and tray preferences.
-4. Sign in with your TradeSkillMaster account.
+4. Select **Sign in with browser** and sign in on the TradeSkillMaster website. Sign in once after upgrading from the old password-based connection.
 5. Install TradeSkillMaster for the WoW clients you use, then use **Addons → Install** to add AppHelper to each client.
 
-The app can find common WoW locations automatically. Saved credentials are stored in Windows Credential Manager, macOS Keychain, or Linux Secret Service; your password is never written to `settings.json`.
+The app can find common WoW locations automatically. If you select **Remember this account securely**, the app stores a refresh token in Windows Credential Manager, macOS Keychain, or Linux Secret Service.
 
-WoW: Forever uses `_forever_` and requires TradeSkillMaster 4.15 or later with AppHelper. Accounting uses rulesets, and the Market data and Auction House views distinguish Forever markets by region, ruleset, and faction when that information is available. Automatic price downloads depend on the legacy TSM service supplying Forever data.
+WoW: Forever uses `_forever_` and requires TradeSkillMaster 4.15 or later with AppHelper. Select your Forever region, ruleset, and faction under **Settings → General → Market management**. The app downloads those markets to the Forever AppHelper, where the addon and the **Auction House** view read them.
 
 > [!TIP]
 > If the Auction House is empty, make sure AppHelper is installed, then synchronize the market again from the **Market data** page.
@@ -123,7 +123,7 @@ Use the realm's **…** menu to synchronize it manually or remove it from the ma
 The **Addons** page lists detected TSM addons and offers AppHelper installation for each detected WoW client.
 
 - **Install** adds the current channel's AppHelper package to the selected client.
-- **Check for updates** compares installed versions with your selected Release or Beta channel.
+- **Check for updates** compares installed versions with the addon release channel selected from those available to your account.
 - **Reinstall** replaces one addon with the current channel version.
 - **Remove** deletes only the selected addon folder after confirmation.
 
@@ -141,7 +141,7 @@ The bundled catalog currently covers active Anniversary TBC items. Other game fl
 
 The **Accounting** page reads your local `TradeSkillMaster.lua` SavedVariables file. Its charts and totals only cover data that the addon recorded. Auction earnings and spending exclude transfers, repair bills, and postage.
 
-Backups create compressed copies of `TradeSkillMaster.lua` and `TradeSkillMaster_AppHelper.lua` when they change, at most once per hour. Local backups are retained for 30 days. Premium TSM accounts can synchronize these archives when addon uploads are enabled. Before restoring, TSM Desktop creates a fresh safety backup; World of Warcraft must be closed.
+Backups create local compressed copies of `TradeSkillMaster.lua` and `TradeSkillMaster_AppHelper.lua` when they change, at most once per hour. Local backups are retained for 30 days. Premium accounts with addon uploads enabled can sync and restore the TradeSkillMaster database through cloud backups. Before restoring, TSM Desktop creates a fresh safety backup. Close World of Warcraft before restoring a backup.
 
 ### Updates
 
@@ -157,14 +157,11 @@ Windows and macOS use a rollback-capable update helper. Linux replaces and resta
 
 ## Privacy and network security
 
-By default, a signed-in sync mirrors the official desktop app's SavedVariables uploads to TradeSkillMaster. This can include AuctionDB scans, Accounting auction events, Black Market data, groups and shopping prices, analytics, error reports, and normalized TSM/AppHelper databases.
+By default, a signed-in sync can submit changed TradeSkillMaster and AppHelper SavedVariables snapshots to TradeSkillMaster over HTTPS.
 
 You can disable all addon-data uploads under **Settings → Advanced → Upload addon data to TradeSkillMaster**.
 
-> [!WARNING]
-> TradeSkillMaster's legacy upload and private session APIs include plain HTTP traffic. Upload data and authenticated session tokens may therefore be unencrypted in transit. Use account synchronization only on a trusted network. HTTPS certificate compatibility exceptions apply only to TradeSkillMaster-owned hosts; GitHub, Blizzard, Wowhead, and other connections retain normal certificate validation.
-
-Access and session tokens remain in memory. Application errors, stack traces, and system diagnostics stay local; only the synchronization log can be uploaded when addon uploads are enabled.
+The browser handles your TradeSkillMaster credentials. The app keeps the access token in memory and validates TLS certificates on its HTTPS connections. Application logs stay local and can be saved from **Logs**.
 
 ## Troubleshooting
 

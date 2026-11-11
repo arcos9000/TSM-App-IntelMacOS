@@ -301,7 +301,7 @@ public sealed partial class AuctionHouseService(
             row.Values.TryGetValue(field, out var value) && value > 0 ? value : null;
     }
 
-    [GeneratedRegex(@"fields=\{(?<fields>.*?)\},data=\{(?<data>.*)\}\}\]\]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"fields=\{(?<fields>.*?)\},data=\{(?<data>.*)\}\}\]=*\]", RegexOptions.CultureInvariant)]
     private static partial Regex DataMetadata();
 
     [GeneratedRegex("\"(?<value>[^\"]+)\"", RegexOptions.CultureInvariant)]

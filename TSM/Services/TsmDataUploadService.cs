@@ -4,10 +4,15 @@ using TSM.Models;
 
 namespace TSM.Services;
 
+public interface ITsmDataUploadService
+{
+    Task<int> UploadAsync(IReadOnlyList<TsmAccount> accounts, CancellationToken cancellationToken = default);
+}
+
 public sealed class TsmDataUploadService(
     ITsmApiClient apiClient,
     LuaSavedVariablesParser parser,
-    Func<string> systemId)
+    Func<string> systemId) : ITsmDataUploadService
 {
     public async Task<int> UploadAsync(IReadOnlyList<TsmAccount> accounts,
         CancellationToken cancellationToken = default)

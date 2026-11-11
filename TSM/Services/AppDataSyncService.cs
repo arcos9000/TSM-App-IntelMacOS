@@ -9,7 +9,7 @@ public sealed class AppDataSyncService(
     AppDataFileWriter writer,
     AccountingService accountingService,
     AddonUpdateService? addonUpdater = null,
-    TsmDataUploadService? dataUploader = null,
+    ITsmDataUploadService? dataUploader = null,
     Func<bool>? uploadsEnabled = null)
 {
     public async Task<DataSyncResult> SyncAsync(
@@ -63,7 +63,7 @@ public sealed class AppDataSyncService(
                 continue;
             }
 
-            var localRealms = mapping.FilterToLocalRealms
+            var localRealms = mapping.FilterToLocalRealms && status.SelectedRealms is null
                 ? FindLocalRealms(accounts.Where(account =>
                     string.Equals(account.GameVersion, installation.Name, StringComparison.OrdinalIgnoreCase)),
                     errors, dataErrors)
@@ -101,7 +101,12 @@ public sealed class AppDataSyncService(
                         if (string.IsNullOrWhiteSpace(blob) ||
                             blob.Contains("<html", StringComparison.OrdinalIgnoreCase))
                             throw new InvalidDataException("the download was empty or HTML");
-                        updates.Add(new AppDataUpdate(type, entry.Name, blob, dataString.LastModified));
+                        var house = status.SelectedRealms is not null &&
+                                    entry.AuctionHouseId.ValueKind is System.Text.Json.JsonValueKind.String
+                                        or System.Text.Json.JsonValueKind.Number
+                            ? entry.AuctionHouseId.ToString()
+                            : null;
+                        updates.Add(new AppDataUpdate(type, entry.Name, blob, dataString.LastModified, house));
                         downloaded++;
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
@@ -138,7 +143,7 @@ public sealed class AppDataSyncService(
 
         return new DataSyncResult(downloaded, writtenFiles, errors,
             status.AddonMessage.Id, status.AddonMessage.Message, status.AppVersion, updatedAddons, uploaded,
-            dataErrors);
+            dataErrors, status.SelectedRealms);
     }
 
     private HashSet<string> FindLocalRealms(IEnumerable<TsmAccount> accounts, ICollection<string> errors,
@@ -164,7 +169,9 @@ public sealed class AppDataSyncService(
     private static AppDataUpdate CreateAppInfo(TsmStatusResponse status)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var version = status.AppVersion > 0 ? status.AppVersion : TsmLegacyApiClient.ApplicationVersion;
+        var version = status.DesktopVersion is { } desktopVersion ? $"\"{EscapeLua(desktopVersion)}\"" :
+            (status.AppVersion > 0 ? status.AppVersion : TsmLegacyApiClient.ApplicationVersion)
+            .ToString(System.Globalization.CultureInfo.InvariantCulture);
         var message = EscapeLua(status.AddonMessage.Message);
         var blob = $"{{version={version},lastSync={now},message={{id={status.AddonMessage.Id},msg=\"{message}\"}},news={{}}}}";
         return new AppDataUpdate("APP_INFO", "Global", blob, now);

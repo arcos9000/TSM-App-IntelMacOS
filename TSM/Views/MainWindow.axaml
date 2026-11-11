@@ -772,7 +772,7 @@
           <Grid IsVisible="{Binding IsLogsSelected}" RowDefinitions="Auto,*,Auto">
             <Border Background="#191919" BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="0,0,0,1" Padding="16,9">
-              <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+              <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                 <StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
                   <lucide:LucideIcon Kind="Activity" Size="16" StrokeWidth="1.8" Foreground="#F0A028" />
                   <StackPanel Spacing="1">
@@ -783,8 +783,6 @@
                 </StackPanel>
                 <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshLogsCommand}" />
                 <Button Grid.Column="2" Content="Save copy…" Click="SaveLogsClick" />
-                <Button Grid.Column="3" Classes="primary" Content="Upload sync log"
-                        Command="{Binding UploadLogCommand}" />
               </Grid>
             </Border>
             <Border Grid.Row="1" Background="#121212">
@@ -1395,16 +1393,12 @@
                   <StackPanel Spacing="18" Margin="20,20,20,32">
                     <StackPanel Spacing="4">
                       <TextBlock Text="Account sync" Classes="section-title" />
-                      <TextBlock Text="Compatibility and account security options." Classes="muted" FontSize="10" />
+                      <TextBlock Text="TradeSkillMaster account and addon data options." Classes="muted" FontSize="10" />
                     </StackPanel>
                     <CheckBox Content="Load and cache Wowhead item details and artwork"
                               IsChecked="{Binding LoadOnlineItemIcons}" />
                     <CheckBox Content="Upload addon data to TradeSkillMaster"
                               IsChecked="{Binding Settings.UploadAddonData}" />
-                    <Border Background="#211C15" BorderBrush="#624921" BorderThickness="1" CornerRadius="3" Padding="14,12">
-                      <TextBlock Foreground="#F4CF87" FontSize="10" TextWrapping="Wrap"
-                                 Text="Warning: TradeSkillMaster does not provide a working secure legacy upload API. Addon uploads and the authenticated session token are sent over plain HTTP. HTTPS certificate validation is disabled only for TradeSkillMaster-owned hosts for compatibility. Turn uploads off on untrusted networks." />
-                    </Border>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                       <Button Content="Log out" Command="{Binding LogoutCommand}" />
                     </StackPanel>
@@ -1545,26 +1539,17 @@
               <TextBlock Text="Sign in" FontSize="20" FontWeight="SemiBold" Foreground="#EEEEEE" />
               <TextBlock Text="Connect your TradeSkillMaster account" Classes="muted" FontSize="11" />
             </StackPanel>
-            <StackPanel Spacing="7">
-              <TextBlock Text="Email address" FontSize="11" />
-              <TextBox Text="{Binding Settings.Email}" PlaceholderText="name@example.com" />
-            </StackPanel>
-            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="7">
-              <TextBlock Text="Password" FontSize="11" VerticalAlignment="Center" />
-              <Button Grid.Column="1" Classes="text-link" Content="Forgot password?"
-                      Tag="https://id.tradeskillmaster.com/realms/app/login-actions/reset-credentials?client_id=app-auth"
-                      Click="OpenExternalLink" />
-              <TextBox Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Password}"
-                       PasswordChar="●" PlaceholderText="Password" />
-            </Grid>
             <CheckBox Content="Remember this account securely" IsChecked="{Binding Settings.RememberLogin}" />
             <TextBlock Text="{Binding LoginStatus}" Classes="muted" FontSize="10" TextWrapping="Wrap"
                        IsVisible="{Binding LoginStatus, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
             <TextBlock Text="{Binding LoginError}" Foreground="{StaticResource DangerBrush}" FontSize="10" TextWrapping="Wrap"
                        IsVisible="{Binding LoginError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-            <Button Classes="primary" Command="{Binding LoginCommand}" Content="Sign in"
+            <Button Classes="primary" Command="{Binding LoginCommand}" Content="Sign in with browser"
+                    IsVisible="{Binding !IsBrowserSignInPending}" HorizontalContentAlignment="Center" />
+            <Button Command="{Binding CancelLoginCommand}" Content="Cancel sign-in"
+                    IsVisible="{Binding IsBrowserSignInPending}"
                     HorizontalContentAlignment="Center" />
-            <TextBlock Text="Credentials are stored in your operating system's protected credential store."
+            <TextBlock Text="Remembered sessions are saved in your operating system's protected credential store."
                        Classes="muted" FontSize="9" TextAlignment="Center" TextWrapping="Wrap" />
           </StackPanel>
         </Border>

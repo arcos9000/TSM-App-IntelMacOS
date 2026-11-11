@@ -4,7 +4,8 @@ using TSM.Models;
 
 namespace TSM.Services;
 
-public sealed class BackupService(AppPaths paths, ITsmApiClient apiClient, Func<string> systemId)
+public sealed class BackupService(AppPaths paths, ITsmApiClient apiClient, Func<string> systemId,
+    Func<bool>? wowRunning = null)
 {
     private static readonly TimeSpan BackupPeriod = TimeSpan.FromHours(1);
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
@@ -46,7 +47,7 @@ public sealed class BackupService(AppPaths paths, ITsmApiClient apiClient, Func<
     public async Task RestoreAsync(BackupEntry backup, IReadOnlyList<TsmAccount> accounts,
         bool cloudEnabled, CancellationToken cancellationToken = default)
     {
-        if (IsWowRunning())
+        if ((wowRunning ?? IsWowRunning)())
             throw new InvalidOperationException("Close World of Warcraft before restoring a backup.");
         var account = accounts.FirstOrDefault(value => string.Equals(AccountKey(value), backup.Account,
             StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidOperationException(

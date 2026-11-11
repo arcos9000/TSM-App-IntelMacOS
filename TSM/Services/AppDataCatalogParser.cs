@@ -17,6 +17,7 @@ public sealed partial class AppDataCatalogParser
         "AUCTIONDB_REGION_HISTORICAL",
         "AUCTIONDB_REGION_SALE",
         "SHOPPING_SEARCHES",
+        "GROUP_IMPORTS",
         "APP_INFO"
     };
 
@@ -36,8 +37,19 @@ public sealed partial class AppDataCatalogParser
                 !long.TryParse(match.Groups["timestamp"].Value, out var timestamp))
                 continue;
 
-            entries.Add(new AppDataEntry(type, match.Groups["realm"].Value.Trim(), timestamp,
-                match.Groups["payload"].Value.TrimEnd()));
+            var realm = match.Groups["realm"].Value.Trim();
+            var payload = match.Groups["payload"].Value.TrimEnd();
+            var house = match.Groups["house"].Success ? match.Groups["house"].Value : null;
+            if (realm.Contains('|') && GroupedPayload().Match(payload) is { Success: true } grouped)
+            {
+                var data = grouped.Groups["data"].Value;
+                foreach (var alias in realm.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                    entries.Add(new AppDataEntry(type, alias, timestamp, payload, house, data));
+            }
+            else
+            {
+                entries.Add(new AppDataEntry(type, realm, timestamp, payload, house));
+            }
         }
 
         return new AppDataCatalog(entries);
@@ -45,7 +57,11 @@ public sealed partial class AppDataCatalogParser
 
     public AppDataCatalog ParseFile(string path) => Parse(File.ReadAllText(path));
 
-    [GeneratedRegex(@"^(?<payload>.*?)\s+--<(?<type>[^,>]+),(?<realm>[^,>]*),(?<timestamp>\d+)>\s*$",
+    [GeneratedRegex(@"^(?<payload>.*?)\s+--<(?<type>[A-Z_][A-Z_0-9]*),(?<realm>[^,>]*),(?<timestamp>\d+)(?:,(?<house>[^,>]+))?>\s*$",
         RegexOptions.CultureInvariant)]
     private static partial Regex MetadataLine();
+
+    [GeneratedRegex("""^for _,r in ipairs\(\{.*?\}\) do select\(2, \.\.\.\)\.LoadData\("[^"]+",r,\[(?<delimiter>=*)\[return (?<data>.*)\]\k<delimiter>\]\) end$""",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex GroupedPayload();
 }

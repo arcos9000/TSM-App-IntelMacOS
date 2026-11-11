@@ -7,6 +7,8 @@ public sealed class TsmStatusResponse
 {
     [JsonPropertyName("appVersion")]
     public int AppVersion { get; init; }
+    public string? DesktopVersion { get; init; }
+    public IReadOnlyList<TsmRealmChoice>? SelectedRealms { get; init; }
 
     [JsonPropertyName("addons")]
     public List<TsmAddonVersion> Addons { get; init; } = [];
@@ -97,7 +99,8 @@ public sealed class TsmDataString
     public long LastModified { get; init; }
 }
 
-public sealed record AppDataUpdate(string Type, string Realm, string DataBlob, long Timestamp);
+public sealed record AppDataUpdate(string Type, string Realm, string DataBlob, long Timestamp,
+    string? AuctionHouseId = null);
 
 public sealed record DataSyncResult(
     int DownloadedEntries,
@@ -108,7 +111,8 @@ public sealed record DataSyncResult(
     int LatestAppVersion = 0,
     IReadOnlyList<string>? UpdatedAddons = null,
     int UploadedDataSets = 0,
-    IReadOnlyList<string>? DataErrors = null)
+    IReadOnlyList<string>? DataErrors = null,
+    IReadOnlyList<TsmRealmChoice>? SelectedRealms = null)
 {
     public bool DataSyncSucceeded => (DataErrors ?? Errors).Count == 0;
 }
@@ -119,9 +123,9 @@ public sealed record TsmUploadRequest(
     object Data,
     bool BinaryContent = false);
 
-public sealed record TsmRemoteBackup(string SystemId, string Account, long Timestamp, bool Keep)
+public sealed record TsmRemoteBackup(string SystemId, string Account, long Timestamp, bool Keep, string? ArchiveId = null)
 {
-    public string RemoteName => $"{SystemId}_{Account}_{Timestamp}.zip";
+    public string RemoteName => ArchiveId ?? $"{SystemId}_{Account}_{Timestamp}.zip";
 }
 
 public sealed record TsmBackupCatalog(

@@ -34,7 +34,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly AuctionPriceHistoryStore _auctionPriceHistory;
     private readonly ItemDatabaseService _itemDatabase;
     private readonly ItemIconService _itemIconService;
-    private readonly ITsmApiClient _apiClient;
+    private readonly TsmDesktopApiClient _apiClient;
     private readonly AppDataSyncService _syncService;
     private readonly ILoginCredentialStore _credentialStore;
     private readonly BackgroundSyncScheduler _backgroundSync;
@@ -58,7 +58,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private int _onboardingStep;
     private string _onboardingWowStatus = string.Empty;
     private bool _isBusy;
-    private string _password = string.Empty;
+    private CancellationTokenSource? _signInCancellation;
     private string _loginError = string.Empty;
     private string _loginStatus = string.Empty;
     private string _headerText = "Sign in required";
@@ -149,7 +149,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         AuctionPriceHistoryStore auctionPriceHistory,
         ItemDatabaseService itemDatabase,
         ItemIconService itemIconService,
-        ITsmApiClient apiClient,
+        TsmDesktopApiClient apiClient,
         AppDataSyncService syncService,
         ILoginCredentialStore credentialStore,
         BackgroundSyncScheduler backgroundSync,
@@ -173,6 +173,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _apiClient = apiClient;
         _syncService = syncService;
         _credentialStore = credentialStore;
+        _apiClient.RefreshTokenChanged += PersistRotatedRefreshToken;
         _backgroundSync = backgroundSync;
         _startupRegistration = startupRegistration;
         _notifications = notifications;
@@ -207,6 +208,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         SelectedManagedRealm = ManagedRealms.FirstOrDefault();
 
         LoginCommand = new AsyncCommand(LoginAsync, () => !IsBusy);
+        CancelLoginCommand = new DelegateCommand(() => _signInCancellation?.Cancel());
         LogoutCommand = new AsyncCommand(LogoutAsync, () => !IsBusy);
         OpenSettingsCommand = new AsyncCommand(OpenSettingsAsync, () => !IsBusy);
         RefreshCommand = new AsyncCommand(RefreshAsync, () => !IsBusy);
@@ -248,8 +250,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             () => AvailableAppUpdate is not null && !IsCheckingForUpdates && !IsInstallingUpdate);
         RefreshBackupsCommand = new AsyncCommand(RefreshBackupsAsync, () => !IsBusy && IsLoggedIn);
         CreateBackupCommand = new AsyncCommand(CreateBackupsAsync, () => !IsBusy);
-        UploadLogCommand = new AsyncCommand(UploadLogAsync,
-            () => !IsBusy && IsLoggedIn && Settings.UploadAddonData);
 
         RefreshLocalData();
     }
@@ -263,12 +263,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var savedVariablesParser = new LuaSavedVariablesParser();
         var accountingService = new AccountingService(savedVariablesParser);
         var appDataParser = new AppDataCatalogParser();
-        var apiClient = new TsmLegacyApiClient(() => true);
+        var apiClient = new TsmDesktopApiClient();
         var credentialStore = new NativeLoginCredentialStore();
         var backgroundSync = new BackgroundSyncScheduler(AutomaticSyncInterval);
         var syncService = new AppDataSyncService(apiClient, appDataParser,
             new AppDataFileWriter(appDataParser), accountingService, dataUploader:
-            new TsmDataUploadService(apiClient, savedVariablesParser, () => settings.UploadSystemId),
+            new TsmSnapshotUploadService(apiClient, savedVariablesParser, () => settings.UploadSystemId),
             uploadsEnabled: () => settings.UploadAddonData);
         var itemDatabase = new ItemDatabaseService();
         var backupService = new BackupService(paths, apiClient, () => settings.UploadSystemId);
@@ -345,7 +345,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     }
     public ObservableCollection<string> AuctionRealmOptions { get; } = [];
     public IReadOnlyList<string> AuctionFactionOptions { get; } = ["Alliance", "Horde", "Both"];
-    public IReadOnlyList<string> ReleaseChannels { get; } = ["Release", "Beta"];
+    public IReadOnlyList<string> ReleaseChannels => new[] { "Release", "Beta" }.Concat(_apiClient.ReleaseChannels)
+        .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     public IReadOnlyList<int> UpdateCheckIntervals { get; } = [1, 3, 6, 12, 24, 48, 168];
     public IReadOnlyList<ThirdPartyLicense> ThirdPartyLicenses { get; } =
     [
@@ -491,7 +492,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 RemoveRealmCommand.RaiseCanExecuteChanged();
                 SyncManagedRealmsCommand.RaiseCanExecuteChanged();
                 RefreshBackupsCommand?.RaiseCanExecuteChanged();
-                UploadLogCommand?.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(ReleaseChannels));
                 OnPropertyChanged(nameof(IsPremium));
                 CheckAddonUpdatesCommand.RaiseCanExecuteChanged();
             }
@@ -582,10 +583,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             CheckAddonUpdatesCommand.RaiseCanExecuteChanged();
             RefreshBackupsCommand?.RaiseCanExecuteChanged();
             CreateBackupCommand?.RaiseCanExecuteChanged();
-            UploadLogCommand?.RaiseCanExecuteChanged();
         }
     }
-    public string Password { get => _password; set => SetProperty(ref _password, value); }
+    public bool IsBrowserSignInPending => _signInCancellation is not null;
     public string LoginError { get => _loginError; private set => SetProperty(ref _loginError, value); }
     public string LoginStatus { get => _loginStatus; private set => SetProperty(ref _loginStatus, value); }
     public string HeaderText { get => _headerText; private set => SetProperty(ref _headerText, value); }
@@ -967,7 +967,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public AsyncCommand InstallUpdateCommand { get; }
     public AsyncCommand RefreshBackupsCommand { get; }
     public AsyncCommand CreateBackupCommand { get; }
-    public AsyncCommand UploadLogCommand { get; }
+    public DelegateCommand CancelLoginCommand { get; }
 
     public void SetWowPath(string path)
     {
@@ -1120,7 +1120,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             _auctionFavoriteKeys.Clear();
             ManagedRealms.Clear();
             AvailableRealms.Clear();
-            Password = string.Empty;
             LoginError = string.Empty;
             LoginStatus = string.Empty;
             _auctionSortColumn = AuctionSortColumn.Item;
@@ -1237,26 +1236,20 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task LoginAsync()
     {
-        if (string.IsNullOrWhiteSpace(Settings.Email) || string.IsNullOrWhiteSpace(Password))
-        {
-            LoginError = "Enter both an email address and password.";
-            return;
-        }
-
+        using var cancellation = new CancellationTokenSource();
+        _signInCancellation = cancellation;
+        OnPropertyChanged(nameof(IsBrowserSignInPending));
         IsBusy = true;
         LoginError = string.Empty;
-        LoginStatus = string.Empty;
+        LoginStatus = "Finish signing in to TradeSkillMaster in your browser.";
         try
         {
-            var email = Settings.Email.Trim();
-            var password = Password;
-            var result = await _apiClient.LoginAsync(email, password);
+            var result = await _apiClient.SignInAsync(TsmBrowserSignIn.OpenBrowser, cancellation.Token);
             if (result.Success)
             {
-                var credentialWarning = await UpdateSavedLoginAsync(email, password);
-                Password = string.Empty;
+                var credentialWarning = await UpdateSavedLoginAsync(_apiClient.RefreshToken!);
                 IsLoggedIn = true;
-                _settingsStore.Save(Settings);
+                LoginStatus = string.Empty;
                 await SyncDataAsync();
                 if (credentialWarning is not null)
                     StatusDetail += $" · {credentialWarning}";
@@ -1266,12 +1259,19 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 LoginError = result.Message;
             }
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            LoginError = "Sign-in cancelled.";
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             LoginError = $"Authentication failed: {exception.Message}";
         }
         finally
         {
+            _signInCancellation = null;
+            OnPropertyChanged(nameof(IsBrowserSignInPending));
+            LoginStatus = string.Empty;
             IsBusy = false;
         }
     }
@@ -1294,7 +1294,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            Password = string.Empty;
             LoginStatus = string.Empty;
             IsSettingsOpen = false;
             IsLoggedIn = false;
@@ -1338,9 +1337,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             foreach (var entry in entries)
                 Backups.Add(entry);
             SelectedBackup = Backups.FirstOrDefault();
-            BackupStatus = _apiClient.IsPremium
-                ? $"{Backups.Count} backup(s) available. Cloud synchronization is { (Settings.UploadAddonData ? "enabled" : "disabled") }."
-                : $"{Backups.Count} local backup(s). Cloud backups require TSM Premium.";
+            BackupStatus = _apiClient.SupportsEndpoint("backup") && Settings.UploadAddonData
+                ? $"{Backups.Count} local and cloud backup(s) available."
+                : $"{Backups.Count} local backup(s).";
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1390,40 +1389,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task UploadLogAsync()
-    {
-        if (!Settings.UploadAddonData)
-        {
-            LogStatus = "Uploads are disabled in Advanced settings.";
-            return;
-        }
-        var log = _logService.ReadSyncLog();
-        if (string.IsNullOrWhiteSpace(log))
-        {
-            LogStatus = "There are no synchronization logs to upload.";
-            return;
-        }
-        IsBusy = true;
-        try
-        {
-            LogStatus = "Uploading synchronization log to TradeSkillMaster…";
-            await _apiClient.UploadLogAsync(log);
-            _logService.WriteSync("info", "Synchronization log uploaded to TradeSkillMaster.");
-            LogStatus = "Synchronization log uploaded. Application errors remained local.";
-            RefreshLogs(false);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            _logService.WriteSync("error", $"Synchronization log upload failed: {exception.Message}");
-            LogStatus = $"Could not upload synchronization log: {exception.Message}";
-            RefreshLogs(false);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
-
     public string GetLogExportText() => _logService.ReadCombined(false);
 
     private void RefreshLogs(bool updateStatus = true)
@@ -1444,7 +1409,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 if (restored is null || !restored.Success)
                     throw new InvalidOperationException(restored?.Message ?? "The saved login could not be restored.");
             }
-            var realms = await _apiClient.GetAvailableRealmsAsync();
+            var (realms, selected) = await _apiClient.GetRealmCatalogAsync();
+            ApplyManagedRealms(selected);
             var available = realms.Where(realm => !Settings.ManagedRealms.Any(managed =>
                     string.Equals(managed.GameVersion, realm.GameVersion, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(managed.Id, realm.Id, StringComparison.OrdinalIgnoreCase)))
@@ -1605,7 +1571,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         if (IsBusy)
             return;
         IsBusy = true;
-        AddonManagementStatus = $"Checking the TSM {Settings.ReleaseChannel} channel for addon updates…";
+        AddonManagementStatus = $"Checking the TSM {_apiClient.EffectiveAddonChannel(Settings.ReleaseChannel)} channel for addon updates…";
         try
         {
             if (!_apiClient.IsAuthenticated)
@@ -1695,6 +1661,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             var accounts = _accountingService.FindAccounts(installations);
             var result = await _syncService.SyncAsync(installations, accounts,
                 Settings.ReleaseChannel, cancellationToken);
+            if (result.SelectedRealms is { } selected)
+                ApplyManagedRealms(selected);
             try
             {
                 var backups = await _backupService.SyncAsync(accounts,
@@ -1745,7 +1713,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         catch (HttpRequestException exception) when (
             allowReauthentication &&
-            exception.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            exception.StatusCode is System.Net.HttpStatusCode.Unauthorized)
         {
             var restored = await RestoreSavedLoginAsync(cancellationToken);
             if (restored?.Success == true)
@@ -1755,7 +1723,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             }
             _apiClient.Logout();
             IsLoggedIn = false;
-            LoginError = "Your saved login is no longer valid. Enter your password to sign in again.";
+            LoginError = "Your TradeSkillMaster session expired. Sign in again in your browser.";
             _logService.WriteSync("error", LoginError);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -1795,6 +1763,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _signInCancellation?.Cancel();
+        _apiClient.RefreshTokenChanged -= PersistRotatedRefreshToken;
         _syncFreshnessTimer.Stop();
         _localDiscoveryTimer.Stop();
         _localDiscoveryTimer.Tick -= DetectLocalChanges;
@@ -1880,6 +1850,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _itemIconService.Dispose();
         _appUpdates.Dispose();
         await _backgroundSync.DisposeAsync();
+        _apiClient.Dispose();
     }
 
     private void RestartAutomaticUpdateChecks()
@@ -2027,21 +1998,23 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         if (!Settings.RememberLogin ||
             string.IsNullOrWhiteSpace(Settings.CredentialKey))
             return null;
-        var saved = await Task.Run(() => _credentialStore.Load(Settings.CredentialKey));
-        if (saved is null)
+        var token = await Task.Run(() => _credentialStore.LoadRefreshToken(Settings.CredentialKey), cancellationToken);
+        if (token is null)
             return null;
-        Settings.Email = saved.Email;
-        return await _apiClient.LoginAsync(saved.Email, saved.Password, cancellationToken);
+        var result = await _apiClient.RestoreSessionAsync(token, cancellationToken);
+        if (result.Success)
+            PersistRotatedRefreshToken(_apiClient.RefreshToken!);
+        return result;
     }
 
-    private async Task<string?> UpdateSavedLoginAsync(string email, string password)
+    private async Task<string?> UpdateSavedLoginAsync(string token)
     {
         try
         {
             if (Settings.RememberLogin)
             {
                 Settings.CredentialKey = await Task.Run(() =>
-                    _credentialStore.Save(Settings.CredentialKey, email, password));
+                    _credentialStore.SaveRefreshToken(Settings.CredentialKey, token));
             }
             else if (!string.IsNullOrWhiteSpace(Settings.CredentialKey))
             {
@@ -2054,6 +2027,34 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             return $"Login was not saved in {_credentialStore.StoreName}: {exception.Message}";
         }
+    }
+
+    private void PersistRotatedRefreshToken(string token)
+    {
+        if (!HasSavedLogin())
+            return;
+        try
+        {
+            _credentialStore.SaveRefreshToken(Settings.CredentialKey, token);
+        }
+        catch (Exception)
+        {
+            _logService.WriteSync("warning", "Could not save the updated TradeSkillMaster session.");
+        }
+    }
+
+    private void ApplyManagedRealms(IReadOnlyList<TsmRealmChoice> realms)
+    {
+        var updated = realms.Select(realm => new ManagedRealmSelection(
+            realm.GameVersion, realm.Region, realm.Name, realm.Id)).Distinct().ToList();
+        if (Settings.ManagedRealms.SequenceEqual(updated))
+            return;
+        var previous = SelectedManagedRealm;
+        Settings.ManagedRealms = updated;
+        ManagedRealms.Clear();
+        foreach (var realm in updated)
+            ManagedRealms.Add(realm);
+        SelectedManagedRealm = ManagedRealms.FirstOrDefault(realm => realm == previous) ?? ManagedRealms.FirstOrDefault();
     }
 
     private void InvalidateAccountingStatistics()
@@ -3378,16 +3379,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         if (result.UpdatedAddons is { Count: > 0 } && Settings.AddonNotification)
             _notifications.Show("TradeSkillMaster addons updated",
                 $"Installed updates for {string.Join(", ", result.UpdatedAddons)}.");
-
-        if (Settings.AppUpdateNotification &&
-            result.LatestAppVersion > TsmLegacyApiClient.ApplicationVersion &&
-            result.LatestAppVersion != Settings.LastNotifiedAppVersion)
-        {
-            _notifications.Show("TradeSkillMaster update available",
-                $"Desktop app version {result.LatestAppVersion} is available (installed protocol version {TsmLegacyApiClient.ApplicationVersion}).");
-            Settings.LastNotifiedAppVersion = result.LatestAppVersion;
-            _settingsStore.Save(Settings);
-        }
 
         if (result.DownloadedEntries > 0 && Settings.RealmDataNotification)
             _notifications.Show("TradeSkillMaster realm data",

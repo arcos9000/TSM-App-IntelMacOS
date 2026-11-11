@@ -17,30 +17,47 @@ public sealed class AppDataFileWriter(AppDataCatalogParser parser)
         {
             foreach (var entry in parser.ParseFile(path).Entries)
             {
-                ValidateKey(entry.Type, entry.Realm);
                 entries[(entry.Type, entry.Realm)] =
-                    new StoredEntry(entry.Type, entry.Realm, entry.UpdatedAtUnix, entry.RawPayload);
+                    new StoredEntry(entry.Type, entry.Realm, entry.UpdatedAtUnix, entry.RawPayload, entry.AuctionHouseId,
+                        entry.SharedDataBlob);
             }
         }
 
         foreach (var update in updates)
         {
             ValidateKey(update.Type, update.Realm);
+            var key = (update.Type, update.Realm);
+            if (entries.TryGetValue(key, out var existing) && existing.Timestamp > update.Timestamp)
+                continue;
             if (string.IsNullOrWhiteSpace(update.DataBlob))
                 throw new InvalidDataException($"The {update.Type}/{update.Realm} data blob was empty.");
-            entries[(update.Type, update.Realm)] =
-                new StoredEntry(update.Type, update.Realm, update.Timestamp, Render(update));
+            entries[key] =
+                new StoredEntry(update.Type, update.Realm, update.Timestamp, Render(update), update.AuctionHouseId);
         }
 
         var directory = Path.GetDirectoryName(Path.GetFullPath(path))
                         ?? throw new InvalidOperationException("AppData.lua has no parent directory.");
         Directory.CreateDirectory(directory);
         var temporaryPath = Path.Combine(directory, $".AppData.{Guid.NewGuid():N}.tmp");
-        var content = string.Join('\n', entries.Values
+        var lines = entries.Values.Where(entry => entry.SharedDataBlob is null).Select(entry =>
+            (entry.Type, entry.Realm, Line: Metadata(entry.Payload, entry.Type, entry.Realm, entry.Timestamp,
+                entry.AuctionHouseId)));
+        var sharedLines = entries.Values.Where(entry => entry.SharedDataBlob is not null)
+            .GroupBy(entry => (entry.Type, entry.Timestamp, entry.AuctionHouseId, entry.SharedDataBlob))
+            .Select(group =>
+            {
+                var key = group.Key;
+                var realms = group.Select(entry => entry.Realm).Order(StringComparer.Ordinal).ToArray();
+                var payload = realms.Length == 1
+                    ? Render(new AppDataUpdate(key.Type, realms[0], key.SharedDataBlob!, key.Timestamp))
+                    : RenderShared(key.Type, realms, key.SharedDataBlob!);
+                var realm = string.Join('|', realms);
+                return (key.Type, Realm: realm, Line: Metadata(payload, key.Type, realm, key.Timestamp, key.AuctionHouseId));
+            });
+        var content = string.Join('\n', lines.Concat(sharedLines)
             .OrderBy(entry => entry.Type, StringComparer.Ordinal)
             .ThenBy(entry => entry.Realm, StringComparer.Ordinal)
-            .Select(entry => $"{entry.Payload} --<{entry.Type},{entry.Realm},{entry.Timestamp}>")
-        ) + "\n";
+            .Select(entry => entry.Line)) + "\n";
 
         try
         {
@@ -54,28 +71,41 @@ public sealed class AppDataFileWriter(AppDataCatalogParser parser)
         }
     }
 
-    private static string Render(AppDataUpdate update)
+    private static string Render(AppDataUpdate update) =>
+        $"select(2, ...).LoadData(\"{EscapeLua(update.Type)}\",\"{EscapeLua(update.Realm)}\",{RenderBody(update.DataBlob)})";
+
+    private static string RenderShared(string type, IReadOnlyList<string> realms, string data)
     {
-        var blob = update.DataBlob.Trim();
+        var keys = string.Join(',', realms.Select(realm => $"\"{EscapeLua(realm)}\""));
+        return $"for _,r in ipairs({{{keys}}}) do select(2, ...).LoadData(\"{EscapeLua(type)}\",r,{RenderBody(data)}) end";
+    }
+
+    private static string Metadata(string payload, string type, string realm, long timestamp, string? auctionHouseId) =>
+        $"{payload} --<{type},{realm},{timestamp}" + (auctionHouseId is null ? ">" : $",{auctionHouseId}>");
+
+    private static string RenderBody(string data)
+    {
+        var blob = data.Trim();
         if (blob.StartsWith("return ", StringComparison.Ordinal))
             blob = blob[7..].TrimStart();
         var equals = string.Empty;
         while (blob.Contains($"]{equals}]", StringComparison.Ordinal))
             equals += "=";
-        return $"select(2, ...).LoadData(\"{EscapeLua(update.Type)}\",\"{EscapeLua(update.Realm)}\",[{equals}[return {blob}]{equals}])";
+        return $"[{equals}[return {blob}]{equals}]";
     }
 
     private static void ValidateKey(string type, string realm)
     {
         if (!AppDataCatalogParser.SupportedTypes.Contains(type))
             throw new InvalidDataException($"Unsupported AppData type '{type}'.");
-        if (realm.IndexOfAny([',', '\r', '\n']) >= 0)
-            throw new InvalidDataException("AppData realm names cannot contain commas or newlines.");
+        if (realm.IndexOfAny([',', '|', '\r', '\n']) >= 0)
+            throw new InvalidDataException("AppData realm names cannot contain commas, pipes, or newlines.");
     }
 
     private static string EscapeLua(string value) => value
         .Replace("\\", "\\\\", StringComparison.Ordinal)
         .Replace("\"", "\\\"", StringComparison.Ordinal);
 
-    private sealed record StoredEntry(string Type, string Realm, long Timestamp, string Payload);
+    private sealed record StoredEntry(string Type, string Realm, long Timestamp, string Payload, string? AuctionHouseId,
+        string? SharedDataBlob = null);
 }

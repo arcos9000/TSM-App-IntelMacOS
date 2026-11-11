@@ -1,6 +1,7 @@
 namespace TSM.Models;
 
-public sealed record AppDataEntry(string Type, string Realm, long UpdatedAtUnix, string RawPayload);
+public sealed record AppDataEntry(string Type, string Realm, long UpdatedAtUnix, string RawPayload,
+    string? AuctionHouseId = null, string? SharedDataBlob = null);
 
 public sealed class AppDataCatalog(IReadOnlyList<AppDataEntry> entries)
 {

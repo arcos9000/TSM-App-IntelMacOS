@@ -18,17 +18,19 @@ internal readonly record struct ForeverMarket(string Ruleset, string Faction)
     public static bool TryParse(string key, out ForeverMarket market)
     {
         var separator = key.LastIndexOf('-');
-        var ruleset = separator < 0 ? key : key[..separator];
+        var faction = separator < 0 ? null : Factions.FirstOrDefault(value =>
+            string.Equals(value, key[(separator + 1)..], StringComparison.OrdinalIgnoreCase));
+        var ruleset = faction is null ? key : key[..separator];
+        if (ruleset.Equals("Roleplay-PvP", StringComparison.OrdinalIgnoreCase))
+            ruleset = "Roleplay PvP";
         var canonicalRuleset = Rulesets.FirstOrDefault(value =>
             string.Equals(value, ruleset, StringComparison.OrdinalIgnoreCase));
-        var faction = separator < 0 ? string.Empty : Factions.FirstOrDefault(value =>
-            string.Equals(value, key[(separator + 1)..], StringComparison.OrdinalIgnoreCase));
-        if (canonicalRuleset is null || faction is null)
+        if (canonicalRuleset is null)
         {
             market = default;
             return false;
         }
-        market = new ForeverMarket(canonicalRuleset, faction);
+        market = new ForeverMarket(canonicalRuleset, faction ?? string.Empty);
         return true;
     }
 

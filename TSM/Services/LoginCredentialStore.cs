@@ -12,6 +12,8 @@ public interface ILoginCredentialStore
     string StoreName { get; }
     SavedLogin? Load(string credentialKey);
     string Save(string? credentialKey, string email, string password);
+    string? LoadRefreshToken(string credentialKey);
+    string SaveRefreshToken(string? credentialKey, string token);
     void Delete(string credentialKey);
 }
 
@@ -54,6 +56,26 @@ public sealed class NativeLoginCredentialStore : ILoginCredentialStore
         };
         using var cache = new CredentialCacheClient(_store);
         cache.AddOrReplace(persona, credential);
+        return persona.ToString();
+    }
+
+    public string? LoadRefreshToken(string credentialKey)
+    {
+        if (!TryParseKey(credentialKey, out var persona))
+            return null;
+        using var cache = new CredentialCacheClient(_store);
+        return cache.TryGet(persona, out var credential) && credential is CredentialWithToken saved
+            ? saved.Token.ToString()
+            : null;
+    }
+
+    public string SaveRefreshToken(string? credentialKey, string token)
+    {
+        var persona = TryParseKey(credentialKey, out var existing)
+            ? existing
+            : CredentialCacheClient.CreatePersonaGUID();
+        using var cache = new CredentialCacheClient(_store);
+        cache.AddOrReplace(persona, new CredentialWithToken { Token = SemanticString<CredentialToken>.Create(token) });
         return persona.ToString();
     }
 

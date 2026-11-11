@@ -1,4 +1,5 @@
 using System.Net;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using ktsu.CredentialCache.Storage;
@@ -19,6 +20,7 @@ var tests = new (string Name, Func<Task> Execute)[]
     ("redirects second launches to the primary app instance", EnforceSingleInstance),
     ("blocks legacy authentication when its transport is disabled", LegacyAuthenticationCanBeDisabled),
     ("authenticates and differentially syncs AppData atomically", AuthenticateAndSyncAppData),
+    ("signs in and syncs Forever through the desktop API", SyncDesktopApi),
     ("uploads current TSM SavedVariables data by endpoint", UploadTsmData),
     ("creates synchronizes and restores Premium backups", PremiumBackups),
     ("records and combines sync and application logs", Run(CombineApplicationLogs)),
@@ -1031,6 +1033,90 @@ static async Task SyncForever()
     }
 }
 
+static async Task SyncDesktopApi()
+{
+    using var handler = new DesktopApiHandler();
+    using var http = new HttpClient(handler);
+    using var client = new TsmDesktopApiClient(http);
+    using var browser = new HttpClient();
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    Task<HttpResponseMessage>? callback = null;
+    var login = await client.SignInAsync(uri =>
+    {
+        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        Assert(uri.Host == "id.tradeskillmaster.com" && query["client_id"] == "desktop-app" &&
+               query["code_challenge_method"] == "S256", "unexpected browser authorization request");
+        handler.CodeChallenge = query["code_challenge"];
+        callback = browser.GetAsync(query["redirect_uri"] + "?state=" + query["state"] + "&code=test-code");
+    }, timeout.Token);
+    using var reply = await callback!;
+    Assert(reply.IsSuccessStatusCode && login.Success && client.IsPremium &&
+           client.ReleaseChannels.SequenceEqual(["Release", "Beta"]), login.Message);
+
+    var available = await client.GetAvailableRealmsAsync(timeout.Token);
+    var normal = available.Single(realm => realm.DisplayName == "Forever · EU · Normal · Alliance");
+    var horde = available.Single(realm => realm.DisplayName == "Forever · EU · Normal · Horde");
+    Assert(normal.Id != horde.Id, "Forever faction markets share an ID");
+    await client.AddRealmAsync(horde.GameVersion, horde.Id, timeout.Token);
+    await client.RemoveRealmAsync(horde.GameVersion, horde.Region, horde.Name, timeout.Token);
+    Assert(handler.AddedHorde && handler.RemovedHorde, "realm mutations did not use the selected auction house");
+
+    var root = Path.Combine(Path.GetTempPath(), $"tsm-desktop-feed-test-{Guid.NewGuid():N}");
+    try
+    {
+        var game = Path.Combine(root, "_forever_");
+        var addons = Path.Combine(game, "Interface", "AddOns");
+        var helper = Path.Combine(addons, "TradeSkillMaster_AppHelper");
+        Directory.CreateDirectory(helper);
+        var file = Path.Combine(helper, "AppData.lua");
+        await File.WriteAllTextAsync(file, """
+            for _,r in ipairs({"PvP-Alliance","PvP-Horde"}) do select(2, ...).LoadData("AUCTIONDB_NON_COMMODITY_DATA",r,[[return {fields={"itemString","minBuyout"},data={{273946,700}}}]]) end --<AUCTIONDB_NON_COMMODITY_DATA,PvP-Alliance|PvP-Horde,1699999999,572>
+            """, timeout.Token);
+
+        var parser = new AppDataCatalogParser();
+        var sync = new AppDataSyncService(client, parser, new AppDataFileWriter(parser),
+            new AccountingService(new LuaSavedVariablesParser()));
+        var result = await sync.SyncAsync([new("Forever", game, addons, Path.Combine(game, "WTF"))], [], "Beta",
+            timeout.Token);
+        Assert(result.DataSyncSucceeded && result.Errors.Count == 0 && result.DownloadedEntries == 2 &&
+               result.SelectedRealms?.Single() == normal && handler.PongSent && handler.CloseSent,
+            $"Unexpected desktop sync result: {string.Join(", ", result.Errors)}");
+        var catalog = parser.ParseFile(file);
+        Assert(catalog.Entries.Single(entry => entry.Realm == "Normal-Alliance").AuctionHouseId == "573" &&
+               catalog.Entries.Any(entry => entry.Realm == "Forever-EU") &&
+               catalog.Entries.Any(entry => entry.Realm == "PvP-Horde" && entry.AuctionHouseId == "572"),
+            "new sync did not preserve grouped AppData or write the Forever market data");
+        Assert((await client.DownloadAddonAsync("TradeSkillMaster", "Beta", "4.15.2", timeout.Token))
+            .SequenceEqual(new byte[] { 0x50, 0x4b, 0x03, 0x04 }), "addon did not download from the feed");
+
+        var backups = await client.GetBackupsAsync(timeout.Token);
+        var patch = backups.Backups.Single(backup => backup.RemoteName == "patch-backup");
+        Assert(patch.Account == "ACCOUNT#1-Forever", "cloud backup lost its Forever client");
+        var restoredBackup = await client.DownloadBackupAsync(patch.RemoteName, timeout.Token);
+        using (var zip = new ZipArchive(new MemoryStream(restoredBackup), ZipArchiveMode.Read))
+        using (var reader = new StreamReader(zip.GetEntry("TradeSkillMaster.lua")!.Open()))
+        {
+            var saved = new LuaSavedVariablesParser().Parse(await reader.ReadToEndAsync(timeout.Token));
+            Assert(saved.TryGetTable("TradeSkillMasterDB", out var db) &&
+                   db.TryGetString("profile", out var value) && value == "Updated",
+                "the desktop API cloud backup chain did not reconstruct SavedVariables");
+        }
+        await client.UploadBackupAsync("system_ACCOUNT#1-Forever_1700000000.zip", restoredBackup, timeout.Token);
+        Assert(handler.CloudBackupUploaded, "the Forever cloud backup was not uploaded as an original");
+        await client.UploadAsync(new TsmUploadRequest("sv-snapshots", [], new { gameType = "forever" }), timeout.Token);
+        Assert(handler.SnapshotUploaded, "the Forever SavedVariables snapshot was not finalized");
+
+        client.Logout();
+        var restored = await client.RestoreSessionAsync("refresh-token", timeout.Token);
+        Assert(restored.Success && client.RefreshToken == "rotated-token", "browser session did not restore and rotate");
+    }
+    finally
+    {
+        if (Directory.Exists(root))
+            Directory.Delete(root, recursive: true);
+    }
+}
+
 static async Task AutomaticSyncCadence()
 {
     Assert(MainWindowViewModel.AutomaticSyncInterval == TimeSpan.FromMinutes(30),
@@ -1119,7 +1205,7 @@ static async Task PremiumBackups()
     await File.WriteAllTextAsync(tsm, "TradeSkillMasterDB = { [\"value\"] = 1 }");
     await File.WriteAllTextAsync(helper, "TradeSkillMaster_AppHelperDB = { [\"region\"] = \"US\" }");
     var api = new FakeApiClient(new TsmStatusResponse());
-    var service = new BackupService(new AppPaths(data), api, () => "system");
+    var service = new BackupService(new AppPaths(data), api, () => "system", () => false);
     var account = new TsmAccount("ACCOUNT#1 · Retail", "ACCOUNT#1", "Retail", tsm, helper);
     try
     {
@@ -1430,6 +1516,171 @@ sealed class WowheadCacheHandler : HttpMessageHandler
             : new ByteArrayContent([0xff, 0xd8, 0xff, 0xd9]);
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
     }
+}
+
+sealed class DesktopApiHandler : HttpMessageHandler
+{
+    private const string Realms = """
+        {"items":[{"realmId":501,"name":"Normal","localizedName":"Normal",
+          "region":{"regionId":"eu-forever","gameVersion":"Forever","regionPrefix":"eu"},
+          "auctionHouses":[{"type":"Alliance","auctionHouseId":573},{"type":"Horde","auctionHouseId":574}]}]}
+        """;
+    private const string Regions = """
+        {"items":[{"regionId":"eu-forever","gameVersion":"Forever","regionPrefix":"eu"}]}
+        """;
+    private readonly string _accessToken = "header." + Base64Url(Encoding.UTF8.GetBytes("""
+        {"sub":"test-user","realm_access":{"roles":["premium-gold"]},
+         "resource_access":{"app-addon-version":{"roles":["channel/beta"]}}}
+        """)) + ".signature";
+    private bool _hordeSelected;
+    private bool _eventsSent;
+    public string? CodeChallenge { get; set; }
+    public bool AddedHorde { get; private set; }
+    public bool RemovedHorde { get; private set; }
+    public bool PongSent { get; private set; }
+    public bool CloseSent { get; private set; }
+    public bool CloudBackupUploaded { get; private set; }
+    public bool SnapshotUploaded { get; private set; }
+    private bool _backupBlobWritten;
+    private bool _snapshotBlobWritten;
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var uri = request.RequestUri!;
+        if (uri.Host == "id.tradeskillmaster.com")
+        {
+            var form = System.Web.HttpUtility.ParseQueryString(
+                await request.Content!.ReadAsStringAsync(cancellationToken));
+            var refresh = form["grant_type"] == "refresh_token" && form["refresh_token"] == "refresh-token";
+            var code = form["grant_type"] == "authorization_code" && form["code"] == "test-code" &&
+                       CodeChallenge == Base64Url(System.Security.Cryptography.SHA256.HashData(
+                           Encoding.ASCII.GetBytes(form["code_verifier"]!)));
+            if (form["client_id"] != "desktop-app" || !(code || refresh))
+                return new HttpResponseMessage(HttpStatusCode.BadRequest);
+            return Reply(JsonSerializer.Serialize(new
+            {
+                access_token = _accessToken, refresh_token = refresh ? "rotated-token" : "refresh-token",
+                expires_in = 300
+            }));
+        }
+
+        if (uri.Host == "app-backend-sockets.tradeskillmaster.com")
+        {
+            if (request.Headers.GetValues("Authorization").Single() != _accessToken)
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+            if (request.Method == HttpMethod.Post)
+            {
+                var packet = await request.Content!.ReadAsStringAsync(cancellationToken);
+                PongSent |= packet == "3";
+                CloseSent |= packet == "1";
+                return Reply("ok", "text/plain");
+            }
+            if (!uri.Query.Contains("sid=", StringComparison.Ordinal))
+                return Reply("""0{"sid":"test-session"}""", "text/plain");
+            if (_eventsSent)
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            _eventsSent = true;
+            return Reply(string.Join('\u001e', "40{}", "2",
+                """42["addon",{"data":[{"addon":"TradeSkillMaster","channel":"beta","version":"4.15.2","url":"https://test.invalid/addon"}],"isComplete":true}]""",
+                """42["app_info",{"message":{"id":3,"msg":"Forever available"}}]""",
+                """42["realm_auctiondb",{"realmId":501,"auctionHouseType":"ALLIANCE","stringType":"AUCTIONDB_NON_COMMODITY_DATA","url":"https://test.invalid/normal","lastModified":"1700000100"}]""",
+                """42["region_auctiondb",{"regionId":"eu-forever","stringType":"AUCTIONDB_REGION_SALE","url":"https://test.invalid/forever-eu","lastModified":1700000200}]"""),
+                "text/plain");
+        }
+
+        if (uri.Host == "test.invalid")
+        {
+            if (request.Headers.Contains("Authorization"))
+                throw new InvalidOperationException("Signed downloads must not carry the account token.");
+            switch (uri.AbsolutePath)
+            {
+                case "/addon":
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent([0x50, 0x4b, 0x03, 0x04])
+                    };
+                case "/original":
+                    return Reply("""[{"profile":"Original"},{"/profile":"string"}]""");
+                case "/patch":
+                    return Reply("""{"diff":[{"op":"replace","path":"/0/profile","value":"Updated"}]}""");
+                case "/upload-backup":
+                case "/upload-snapshot":
+                    using (var stream = new GZipStream(await request.Content!.ReadAsStreamAsync(cancellationToken),
+                               CompressionMode.Decompress))
+                    using (var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken))
+                    {
+                        if (uri.AbsolutePath == "/upload-backup")
+                            _backupBlobWritten = doc.RootElement[0].GetProperty("profile").GetString() == "Updated";
+                        else
+                            _snapshotBlobWritten = doc.RootElement.GetProperty("gameType").GetString() == "forever";
+                    }
+                    return new HttpResponseMessage(HttpStatusCode.OK);
+                default:
+                    return Reply("""{fields={"itemString","minBuyout"},data={{273946,800}}}""", "text/plain");
+            }
+        }
+
+        if (request.Headers.Authorization?.Scheme != "Bearer" || request.Headers.Authorization.Parameter != _accessToken)
+            return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+        if (uri.AbsolutePath == "/v2/realms")
+            return Reply(Realms);
+        if (uri.AbsolutePath == "/v2/regions")
+            return Reply(Regions);
+        if (uri.AbsolutePath == "/user-realms" && request.Method == HttpMethod.Get && uri.Query == "?userIds=test-user")
+            return Reply(_hordeSelected
+                ? """{"items":[{"id":"horde-choice","realmId":501,"auctionHouseType":"HORDE"}]}"""
+                : """{"items":[{"id":"alliance-choice","realmId":501,"auctionHouseType":"ALLIANCE"}]}""");
+        if (uri.AbsolutePath == "/user-realms" && request.Method == HttpMethod.Post)
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            AddedHorde = body.RootElement.GetProperty("realmId").GetInt32() == 501 &&
+                         body.RootElement.GetProperty("auctionHouseType").GetString() == "HORDE";
+            _hordeSelected = AddedHorde;
+            return new HttpResponseMessage(HttpStatusCode.Created);
+        }
+        if (uri.AbsolutePath == "/user-realms/horde-choice" && request.Method == HttpMethod.Delete)
+        {
+            RemovedHorde = true;
+            _hordeSelected = false;
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+        if (uri.AbsolutePath == "/backups" && request.Method == HttpMethod.Get)
+            return Reply("""
+                {"items":[
+                  {"backupId":"original-backup","systemId":"system","account":"ACCOUNT#1","gameVersion":"_forever_",
+                   "type":"original","timestamp":"2023-11-14T22:13:20.000Z","url":"https://test.invalid/original"},
+                  {"backupId":"patch-backup","previousId":"original-backup","systemId":"system","account":"ACCOUNT#1",
+                   "gameVersion":"_forever_","type":"patch","timestamp":"2023-11-14T22:15:20.000Z",
+                   "url":"https://test.invalid/patch"}]}
+                """);
+        if (uri.AbsolutePath == "/backups/uploads" && request.Method == HttpMethod.Post)
+            return Reply("""{"url":"https://test.invalid/upload-backup"}""");
+        if (uri.AbsolutePath == "/backups" && request.Method == HttpMethod.Post)
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            CloudBackupUploaded = _backupBlobWritten &&
+                                  body.RootElement.GetProperty("gameVersion").GetString() == "_forever_" &&
+                                  body.RootElement.GetProperty("account").GetString() == "ACCOUNT#1" &&
+                                  body.RootElement.GetProperty("type").GetString() == "original";
+            return new HttpResponseMessage(HttpStatusCode.Created);
+        }
+        if (uri.AbsolutePath == "/sv-snapshots/uploads" && request.Method == HttpMethod.Post)
+            return Reply("""{"id":"snapshot-id","url":"https://test.invalid/upload-snapshot"}""");
+        if (uri.AbsolutePath == "/sv-snapshots" && request.Method == HttpMethod.Post)
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            SnapshotUploaded = _snapshotBlobWritten && body.RootElement.GetProperty("id").GetString() == "snapshot-id";
+            return new HttpResponseMessage(HttpStatusCode.Created);
+        }
+        return new HttpResponseMessage(HttpStatusCode.NotFound);
+    }
+
+    private static HttpResponseMessage Reply(string text, string mediaType = "application/json") =>
+        new(HttpStatusCode.OK) { Content = new StringContent(text, Encoding.UTF8, mediaType) };
+
+    private static string Base64Url(byte[] bytes) =>
+        Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
 
 sealed class ThrottledWowheadHandler : HttpMessageHandler
