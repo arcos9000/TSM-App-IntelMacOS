@@ -22,15 +22,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # This fork builds only the Intel Mac package. The Windows and Linux
-          # steps below are kept (skipped by their `if:` checks) so
-          # the file stays close to upstream and merges cleanly.
-          # Intel Macs are cross-published from the Apple Silicon runner: the
-          # .app/.dmg packaging tools are architecture-independent, and this avoids
-          # depending on GitHub's Intel macOS runners, which are being retired.
+          # This fork builds only the Intel Mac package. The upstream Windows,
+          # Linux and macOS steps below are kept (skipped by their `if:` checks)
+          # so the file stays close to upstream and merges cleanly.
+          # The app and its update ZIP are built on Linux, where runners are
+          # always available (macOS runners can queue until GitHub cancels the
+          # job). The optional `dmg` job adds the disk image on a Mac.
           - name: macOS Intel
-            runner: macos-15
-            family: macos
+            runner: ubuntu-24.04
+            family: macos-cross
             runtime: osx-x64
             package_arch: x86_64
     runs-on: ${{ matrix.runner }}
@@ -134,6 +134,25 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$app" \
             "artifacts/packages/TSM-${{ steps.version.outputs.value }}-macos-${{ matrix.package_arch }}.zip"
 
+      - name: Set up Python for macOS bundling
+        if: matrix.family == 'macos-cross'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create macOS application bundle on Linux
+        if: matrix.family == 'macos-cross'
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check -q "pillow==12.3.0"
+          python -I packaging/macos/build-app-bundle.py \
+            "artifacts/publish/${{ matrix.runtime }}" \
+            artifacts/stage \
+            "${{ steps.version.outputs.value }}" \
+            "${{ matrix.package_arch }}"
+          mkdir -p artifacts/packages
+          mv "artifacts/stage/TSM-${{ steps.version.outputs.value }}-macos-${{ matrix.package_arch }}.zip" artifacts/packages/
+
       - name: Build macOS disk image
         if: matrix.family == 'macos'
         shell: bash
@@ -177,9 +196,63 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Optional: wraps the Linux-built app in a .dmg. If GitHub has no Mac runner
+  # free, this job fails or is cancelled and the release goes out with the ZIP.
+  dmg:
+    name: macOS Intel disk image (optional)
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 20
+    continue-on-error: true
+    env:
+      RUNTIME: osx-x64
+      PACKAGE_ARCH: x86_64
+    steps:
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            value="${{ inputs.version }}"
+          else
+            value="${GITHUB_REF_NAME#v}"
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Download app ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: TSM-${{ steps.version.outputs.value }}-osx-x64
+          path: artifacts/zip
+
+      - name: Build disk image
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          dmg_root="artifacts/stage/dmg-$RUNTIME"
+          dmg="artifacts/packages/TSM-$version-macos-$PACKAGE_ARCH.dmg"
+          mkdir -p "$dmg_root" artifacts/packages
+          ditto -x -k "artifacts/zip/TSM-$version-macos-$PACKAGE_ARCH.zip" "$dmg_root"
+          app="$dmg_root/TradeSkillMaster.app"
+          test -x "$app/Contents/MacOS/TSM"
+          ln -s /Applications "$dmg_root/Applications"
+          cp "$app/Contents/Resources/tsm-app.icns" "$dmg_root/.VolumeIcon.icns"
+          SetFile -a C "$dmg_root"
+          hdiutil create -volname "TSM Desktop" -srcfolder "$dmg_root" -ov -format UDZO "$dmg"
+
+      - name: Upload disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: TSM-${{ steps.version.outputs.value }}-osx-x64-dmg
+          path: artifacts/packages/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
   publish:
     name: Publish complete release set
-    needs: build
+    needs: [build, dmg]
+    # Run even when the optional dmg job failed or never got a Mac runner.
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-24.04
     steps:
       - name: Download all current packages
@@ -198,7 +271,7 @@ jobs:
           body: |
             ## Unofficial TradeSkillMaster desktop app for Intel Macs
 
-            Intel Mac build of [Wuild/TSM-App](https://github.com/Wuild/TSM-App). Download `TSM-<version>-macos-x86_64.dmg`, open it and drag `TradeSkillMaster.app` to Applications. The app is not signed by Apple: on first launch, right-click it and choose **Open**.
+            Intel Mac build of [Wuild/TSM-App](https://github.com/Wuild/TSM-App). Download `TSM-<version>-macos-x86_64.dmg`, open it and drag `TradeSkillMaster.app` to Applications. If no `.dmg` is listed, download `TSM-<version>-macos-x86_64.zip`, double-click it and drag the app to Applications. The app is not signed by Apple: on first launch, right-click it and choose **Open**.
 
             This independent project is not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment, or Wowhead.
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -206,7 +279,7 @@ jobs:
   cleanup-old-artifacts:
     name: Remove older workflow artifacts
     needs: publish
-    if: success()
+    if: always() && needs.publish.result == 'success'
     runs-on: ubuntu-24.04
     steps:
       - name: Delete artifacts from previous runs
