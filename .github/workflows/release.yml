@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number for manual builds (no leading v)"
+        required: true
+        default: "0.0.0-dev"
 
 permissions:
   contents: write
@@ -26,6 +32,15 @@ jobs:
             family: macos
             runtime: osx-arm64
             package_arch: arm64
+          # Intel Macs: cross-published from the Apple Silicon runner. The .app/.dmg
+          # packaging tools (sips, iconutil, plutil, ditto, hdiutil) are architecture-
+          # independent, and this avoids depending on GitHub's Intel macOS runners,
+          # which are being retired.
+          - name: macOS Intel
+            runner: macos-15
+            family: macos
+            runtime: osx-x64
+            package_arch: x86_64
           - name: Linux x64
             runner: ubuntu-24.04
             family: linux
@@ -47,7 +62,11 @@ jobs:
         id: version
         shell: bash
         run: |
-          value="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            value="${{ inputs.version }}"
+          else
+            value="${GITHUB_REF_NAME#v}"
+          fi
           echo "value=$value" >> "$GITHUB_OUTPUT"
 
       - name: Publish self-contained application
@@ -194,7 +213,7 @@ jobs:
 
             Linux x86_64 users can download the self-contained `.AppImage`; no separate .NET runtime is required. The app provides local AppHelper realm synchronization, TSM addon management, Accounting export, and an Auction House browser for World of Warcraft on Linux.
 
-            Download the `.exe` installer for Windows x64 or the `.dmg` for Apple Silicon macOS. This independent project is not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment, or Wowhead.
+            Download the `.exe` installer for Windows x64, the `macos-arm64.dmg` for Apple Silicon Macs, or the `macos-x86_64.dmg` for Intel Macs. This independent project is not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment, or Wowhead.
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   cleanup-old-artifacts:
