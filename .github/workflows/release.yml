@@ -22,29 +22,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x64
-            runner: windows-latest
-            family: windows
-            runtime: win-x64
-            package_arch: x86_64
-          - name: macOS Apple Silicon
-            runner: macos-15
-            family: macos
-            runtime: osx-arm64
-            package_arch: arm64
-          # Intel Macs: cross-published from the Apple Silicon runner. The .app/.dmg
-          # packaging tools (sips, iconutil, plutil, ditto, hdiutil) are architecture-
-          # independent, and this avoids depending on GitHub's Intel macOS runners,
-          # which are being retired.
+          # This fork builds only the Intel Mac package. The Windows and Linux
+          # steps below are kept (skipped by their `if:` checks) so
+          # the file stays close to upstream and merges cleanly.
+          # Intel Macs are cross-published from the Apple Silicon runner: the
+          # .app/.dmg packaging tools are architecture-independent, and this avoids
+          # depending on GitHub's Intel macOS runners, which are being retired.
           - name: macOS Intel
             runner: macos-15
             family: macos
             runtime: osx-x64
-            package_arch: x86_64
-          - name: Linux x64
-            runner: ubuntu-24.04
-            family: linux
-            runtime: linux-x64
             package_arch: x86_64
     runs-on: ${{ matrix.runner }}
     env:
@@ -209,11 +196,11 @@ jobs:
           files: artifacts/packages/*
           generate_release_notes: true
           body: |
-            ## Unofficial TradeSkillMaster desktop app for Linux
+            ## Unofficial TradeSkillMaster desktop app for Intel Macs
 
-            Linux x86_64 users can download the self-contained `.AppImage`; no separate .NET runtime is required. The app provides local AppHelper realm synchronization, TSM addon management, Accounting export, and an Auction House browser for World of Warcraft on Linux.
+            Intel Mac build of [Wuild/TSM-App](https://github.com/Wuild/TSM-App). Download `TSM-<version>-macos-x86_64.dmg`, open it and drag `TradeSkillMaster.app` to Applications. The app is not signed by Apple: on first launch, right-click it and choose **Open**.
 
-            Download the `.exe` installer for Windows x64, the `macos-arm64.dmg` for Apple Silicon Macs, or the `macos-x86_64.dmg` for Intel Macs. This independent project is not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment, or Wowhead.
+            This independent project is not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment, or Wowhead.
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   cleanup-old-artifacts:

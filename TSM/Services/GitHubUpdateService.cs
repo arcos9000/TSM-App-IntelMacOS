@@ -36,8 +36,8 @@ public sealed record AppUpdateProgress(string Status, long BytesReceived = 0, lo
 
 public sealed class GitHubUpdateService : IDisposable
 {
-    public const string RepositoryOwner = "Wuild";
-    public const string RepositoryName = "TSM-App";
+    public const string RepositoryOwner = "arcos9000";
+    public const string RepositoryName = "TSM-App-IntelMacOS";
     private const long MaximumPackageBytes = 1_000_000_000;
     private static readonly Uri ReleasesEndpoint = new(
         $"https://api.github.com/repos/{RepositoryOwner}/{RepositoryName}/releases?per_page=20");

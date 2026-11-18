@@ -1301,7 +1301,7 @@
                   <StackPanel Spacing="18" Margin="20,20,20,32">
                     <StackPanel Spacing="4">
                       <TextBlock Text="Application updates" Classes="section-title" />
-                      <TextBlock Text="Updates come directly from Wuild/TSM-App releases on GitHub." Classes="muted" FontSize="10" />
+                      <TextBlock Text="Updates come directly from arcos9000/TSM-App-IntelMacOS releases on GitHub." Classes="muted" FontSize="10" />
                     </StackPanel>
                     <Border Classes="subtle-card" Padding="18">
                       <StackPanel Spacing="14">
@@ -1453,7 +1453,7 @@
                         <Button Classes="ghost" Content="User guide" Margin="0,0,8,8"
                                 Tag="https://github.com/Wuild/TSM-App#readme" Click="OpenExternalLink" />
                         <Button Classes="ghost" Content="Latest release" Margin="0,0,8,8"
-                                Tag="https://github.com/Wuild/TSM-App/releases/latest" Click="OpenExternalLink" />
+                                Tag="https://github.com/arcos9000/TSM-App-IntelMacOS/releases/latest" Click="OpenExternalLink" />
                         <Button Classes="ghost" Content="Report a problem" Margin="0,0,8,8"
                                 Tag="https://github.com/Wuild/TSM-App/issues" Click="OpenExternalLink" />
                         <Button Classes="ghost" Content="TradeSkillMaster" Margin="0,0,8,8"
